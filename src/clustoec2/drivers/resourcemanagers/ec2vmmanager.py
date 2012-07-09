@@ -91,6 +91,11 @@ class EC2VMManager(ResourceManager):
         
         return il[0].instances[0]
 
+    def _get_instance_by_id(self, instance_id, region=None):
+        conn = self._ec2_connection(region)
+        il = conn.get_all_instances(instance_id)
+        return il[0].instances[0]
+
     def _stop_instance(self, resource):
 
         conn = self._ec2_connection(resource['placement'][:-1])
@@ -152,14 +157,14 @@ class EC2VMManager(ResourceManager):
             return None
 
     def allocator(self, thing):
-        """Allocate VMs on ec2 while keeping track of current costs and staying within the budget
-
+        """
+        Allocate VMs on ec2 while keeping track of current costs and
+        staying within the budget
         """
 
         for res in self.resources(thing):
             raise ResourceException("%s is already assigned to %s"
                                     % (thing.name, res.value))
-
 
         region = thing.attr_value(key='aws', subkey='ec2_region',
                                   merge_container_attrs=True) or 'us-east-1'
@@ -191,10 +196,11 @@ class EC2VMManager(ResourceManager):
         
         res = self.resources(thing)
         if len(res) > 1:
-            raise ResourceException("%s is somehow already assigned more than one instance")
+            raise ResourceException("%s is somehow already assigned more than one instance"
+                                    % thing.name)
         elif len(res) == 1:
             raise ResourceException("%s is already running as %s"
-                                    % res[0].value)
+                                    % (res, res[0].value))
         else:
             
             c = self._ec2_connection(region)
