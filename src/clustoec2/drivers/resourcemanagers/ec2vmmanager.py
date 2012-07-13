@@ -63,16 +63,12 @@ class EC2VMManager(ResourceManager):
                    }
 
     def _ec2_connection(self, region=None):
-        c = boto.connect_ec2(aws_access_key_id=str(self.aws_access_key_id),
-                             aws_secret_access_key=str(self.aws_secret_access_key))
+        c = boto.connect_ec2()
 
         if not region or region == 'us-east-1':
             return c
         else:
-            return boto.ec2.connect_to_region(region,
-                                              aws_access_key_id=str(self.aws_access_key_id),
-                                              aws_secret_access_key=str(self.aws_secret_access_key))
-            
+            return boto.ec2.connect_to_region(region)
 
     def _instance_to_dict(self, instance):
 
@@ -93,7 +89,9 @@ class EC2VMManager(ResourceManager):
 
     def _get_instance_by_id(self, instance_id, region=None):
         conn = self._ec2_connection(region)
+
         il = conn.get_all_instances(instance_id)
+
         return il[0].instances[0]
 
     def _stop_instance(self, resource):
@@ -112,6 +110,22 @@ class EC2VMManager(ResourceManager):
                     instance.stop()
                     return
                 
+
+    def _find_ec2_instances(self, instance_id):
+        instances = []
+
+        regions = [r.name for r in self._ec2_connection().get_all_regions()]
+        
+        for region in regions:
+            conn = self._ec2_connection(region)
+
+            for reservation in conn.get_all_instances():
+                for instance in reservation.instances:
+                    if instance.id == instance_id:
+                        instances.append(instance)
+
+        return instances
+
 
     def get_all_ec2_instance_resources(self):
         """Query AWS and return all active ec2 instances and their state"""
@@ -156,7 +170,7 @@ class EC2VMManager(ResourceManager):
         else:
             return None
 
-    def allocator(self, thing):
+    def allocator(self, thing=None):
         """
         Allocate VMs on ec2 while keeping track of current costs and
         staying within the budget
@@ -166,43 +180,81 @@ class EC2VMManager(ResourceManager):
             raise ResourceException("%s is already assigned to %s"
                                     % (thing.name, res.value))
 
-        region = thing.attr_value(key='aws', subkey='ec2_region',
-                                  merge_container_attrs=True) or 'us-east-1'
+        instance_id = thing.attr_value(key='aws', subkey='ec2_instance_id')
 
-        instance_type = thing.attr_value(key='aws', subkey='ec2_instance_type',
+        region = thing.attr_value(key='aws', subkey='ec2_region',
+                                  merge_container_attrs=True)
+
+        i = None
+
+        if instance_id:
+            if region:
+                i = self._get_instance_by_id(instance_id = instance_id, region = region)
+            else:
+                existing_instances = self._find_ec2_instances(instance_id)
+        
+                if len(existing_instances) > 1:
+                    raise ResourceException("more than one instance found, add region "
+                                            "attribute")
+                elif len(existing_instances) == 1:
+                    i = existing_instances[0]
+
+        if i:
+            thing.set_attr(key='aws', subkey='ec2_region', value=i.region.name)
+
+            thing.set_attr(key='aws', subkey='ec2_instance_type',
+                           value=i.instance_type)
+
+            thing.set_attr(key='aws', subkey='ec2_ami', value=i.image_id)
+
+            thing.set_attr(key='aws', subkey='ec2_placement', value=i.placement)
+
+            user_data = self._build_user_data(thing)
+
+            if i.key_name:
+                thing.set_attr(key='aws', subkey='ec2_key_name',
+                               value=i.key_name)
+
+            if i.groups:
+                groups = []
+                for group in i.groups:
+                    groups.append(group.name)
+
+                thing.set_attr(key='aws', subkey='ec2_security_groups',
+                               value=groups)
+
+            if thing.name != i.id:
+                i.add_tag('Name', thing.name)
+        else:
+            if not region:
+                region = 'us-east-1'
+                thing.set_attr(key='aws', subkey='ec2_region', value=region)
+
+            instance_type = thing.attr_value(key='aws', subkey='ec2_instance_type',
+                                             merge_container_attrs=True)
+
+            if not instance_type:
+                raise ResourceException("No instance type specified for %s"
+                                        % thing.name)
+        
+            image_id = thing.attr_value(key='aws', subkey='ec2_ami',
+                                        merge_container_attrs=True)
+
+            if not image_id:
+                raise ResourceException("No AMI specified for %s" % thing.name)
+        
+            placement = thing.attr_value(key='aws', subkey='ec2_placement',
                                          merge_container_attrs=True)
 
-        if not instance_type:
-            raise ResourceException("No instance type specified for %s"
-                                    % thing.name)
+            user_data = self._build_user_data(thing)
         
-        image_id = thing.attr_value(key='aws', subkey='ec2_ami',
-                                    merge_container_attrs=True)
-
-        if not image_id:
-            raise ResourceException("No AMI specified for %s" % thing.name)
-        
-        placement = thing.attr_value(key='aws', subkey='ec2_placement',
-                                     merge_container_attrs=True)
-
-        user_data = self._build_user_data(thing)
-        
-        key_name = thing.attr_value(key='aws', subkey='ec2_key_name',
-                                    merge_container_attrs=True)
+            key_name = thing.attr_value(key='aws', subkey='ec2_key_name',
+                                        merge_container_attrs=True)
 
 
-        security_groups = thing.attr_values(key='aws', subkey='ec2_security_group',
-                                            merge_container_attrs=True)
+            security_groups = thing.attr_values(key='aws', subkey='ec2_security_group',
+                                                merge_container_attrs=True)
         
-        res = self.resources(thing)
-        if len(res) > 1:
-            raise ResourceException("%s is somehow already assigned more than one instance"
-                                    % thing.name)
-        elif len(res) == 1:
-            raise ResourceException("%s is already running as %s"
-                                    % (res, res[0].value))
-        else:
-            
             c = self._ec2_connection(region)
             image = c.get_image(image_id)
 
