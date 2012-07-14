@@ -81,6 +81,33 @@ class BootstrapEc2(script_helper.Script):
                     region_entity.insert(zone_entity)
                 self.debug('Inserted "%s" zone in "%s" region' %
                     (zone.name, region.name, ))
+
+        self.info('Creating all instances')
+        for reservations in conn.get_all_instances():
+            for instance in reservations.instances:
+                instance_entity = clusto.get_or_create(instance.id,
+                        ec2_drivers.EC2VirtualServer)
+                placement = clusto.get_by_name(instance.placement)
+                if placement not in instance_entity.parents():
+                    placement.insert(instance_entity)
+                instance_entity.add_attr(key='aws', subkey='ec2_instance_type',
+                        value=instance.instance_type)
+                instance_entity.add_attr(key='aws', subkey='ec2_ami',
+                        value=instance.image_id)
+                if instance.key_name is not None:
+                    instance_entity.add_attr(key='aws', subkey='ec2_key_name',
+                            value=instance.key_name)
+                if instance.groups:
+                    for group in instance.groups:
+                        instance_entity.add_attr(key='aws',
+                                subkey='ec2_security_group',
+                                number=True,
+                                value=group.name)
+                if instance_entity not in ec2vmman.referencers():
+                    ec2vmman.allocate(instance_entity, 
+                            resource={
+                                'placement': instance.placement,
+                                'instance_id': instance.id })
         self.info('Finished, AWS objects should now be in the database')
 
 
